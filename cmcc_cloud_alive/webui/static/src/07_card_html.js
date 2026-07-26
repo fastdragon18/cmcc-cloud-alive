@@ -337,9 +337,21 @@
     const keepVal = active && "value" in active ? active.value : null;
     body.innerHTML = configFormHtml(p);
     if (keepKey) {
-      const el = body.querySelector('[data-key="' + keepKey + '"]');
+      // Desktop radios all share data-key="desktop"; a bare querySelector would
+      // return the FIRST radio and (below) overwrite its fixed value with the
+      // focused radio's usid → the wrong desktop gets bound. Disambiguate by
+      // value in JS, and never rewrite a radio/checkbox value.
+      const cands = body.querySelectorAll('[data-key="' + keepKey + '"]');
+      let el = null;
+      if (keepVal != null) {
+        for (let i = 0; i < cands.length; i++) {
+          if (cands[i].value === keepVal) { el = cands[i]; break; }
+        }
+      }
+      if (!el) el = cands[0] || null;
       if (el) {
-        if (keepVal != null && el.type !== "password") {
+        const t = el.type;
+        if (keepVal != null && t !== "password" && t !== "radio" && t !== "checkbox") {
           try {
             el.value = keepVal;
           } catch (_) { logCatch("catch", _); }

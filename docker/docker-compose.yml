@@ -4,11 +4,15 @@
 # CLI same image:
 #   docker compose -f docker/docker-compose.yml run --rm cmcc-webui cmcc-cloud-alive --help
 #
-# Host port: default 28080 (avoid busy 8080). Override:
-#   CMCC_HOST_PORT=29090 docker compose -f docker/docker-compose.yml up -d
+# Network: host by default (Linux). App listens on 127.0.0.1:${CMCC_WEBUI_PORT}.
+#   Override port:  CMCC_WEBUI_PORT=29090 docker compose -f docker/docker-compose.yml up -d
+#   macOS / Windows Docker Desktop do NOT support host networking — either use the
+#   no-Docker launcher (scripts/run-webui.sh) or switch this file to port mapping
+#   (comment out `network_mode: host`, uncomment the `ports:` block, set HOST=0.0.0.0).
 #
 # Env:
-#   CMCC_HOST_PORT     host bind port (default 28080 → container 8080)
+#   CMCC_WEBUI_PORT    port the WebUI listens on (default 28080)
+#   CMCC_HOST_PORT     only for the port-mapping (Mac/Win) fallback in `ports:`
 #   CMCC_WEBUI_TOKEN   optional Bearer gate; set in host .env only — never commit
 #   CMCC_ALIVE_HOME    home prefix inside container (/data); durable root is
 #                      $CMCC_ALIVE_HOME/.cmcc-cloud-alive
@@ -21,19 +25,29 @@ services:
       dockerfile: docker/Dockerfile
     image: cmcc-cloud-alive:local
     container_name: cmcc-webui
+    # 数据目录属主必须与此 uid 一致。命名卷(cmcc_data)由容器以此 uid 新建，无需操心；
+    # 但如果你把宿主目录 bind 挂载到 /data，请把这里改成该目录属主的 uid:gid
+    # （例如宿主用户 1000:1000），否则容器读不到你的 profile（Permission denied）。
     user: "10001:10001"
     init: true
-    ports:
-      # bind loopback only; host port overridable via CMCC_HOST_PORT
-      - "127.0.0.1:${CMCC_HOST_PORT:-28080}:8080"
+    # ── 网络模式 ──────────────────────────────────────────────────────────
+    # 默认 host 网络（Linux 推荐，最简单：容器直接监听宿主的 CMCC_WEBUI_PORT）。
+    # ⚠️ macOS / Windows 的 Docker Desktop 不支持 host 网络（容器跑在内置虚拟机里，
+    #    host 网络绑到的是虚拟机而不是你的电脑，宿主 localhost 访问不到）。
+    #    Mac/Win 请：① 注释掉下面这行 network_mode: host；
+    #              ② 取消注释 ports: 段；③ 把 CMCC_WEBUI_HOST 改成 "0.0.0.0"。
+    network_mode: host
+    # ports:
+    #   - "127.0.0.1:${CMCC_HOST_PORT:-28080}:8080"   # Mac/Win 用（配合关闭 host 网络）
     env_file:
       - path: ../.env
         required: false
     environment:
       HOME: /data
       CMCC_ALIVE_HOME: /data
-      CMCC_WEBUI_HOST: "0.0.0.0"
-      CMCC_WEBUI_PORT: "8080"
+      # host 网络：绑回环仅本机可访问；改 0.0.0.0 可让局域网访问（也用于 Mac/Win 端口映射）
+      CMCC_WEBUI_HOST: "127.0.0.1"
+      CMCC_WEBUI_PORT: "${CMCC_WEBUI_PORT:-28080}"
       # CMCC_WEBUI_TOKEN: set in host .env — never commit
       # Do not inject HTTP(S)_PROXY — container must reach CMCC APIs directly.
     volumes:
@@ -49,7 +63,7 @@ services:
           "CMD",
           "python",
           "-c",
-          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/api/health', timeout=3).read()",
+          "import os,urllib.request; urllib.request.urlopen('http://127.0.0.1:%s/api/health' % os.environ.get('CMCC_WEBUI_PORT','28080'), timeout=3).read()",
         ]
       interval: 30s
       timeout: 5s

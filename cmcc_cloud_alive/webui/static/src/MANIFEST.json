@@ -14,49 +14,49 @@
   {
     "file": "03_auth_gate.js",
     "start": 145,
-    "end": 690,
-    "lines": 546
+    "end": 687,
+    "lines": 543
   },
   {
     "file": "04_api_status.js",
-    "start": 691,
-    "end": 901,
+    "start": 688,
+    "end": 898,
     "lines": 211
   },
   {
     "file": "05_jobstore.js",
-    "start": 902,
-    "end": 1053,
+    "start": 899,
+    "end": 1050,
     "lines": 152
   },
   {
     "file": "06_logs_dom.js",
-    "start": 1054,
-    "end": 1687,
-    "lines": 634
+    "start": 1051,
+    "end": 1689,
+    "lines": 639
   },
   {
     "file": "07_card_html.js",
-    "start": 1688,
-    "end": 2171,
-    "lines": 484
+    "start": 1690,
+    "end": 2185,
+    "lines": 496
   },
   {
     "file": "08_data_loaders.js",
-    "start": 2172,
-    "end": 2404,
+    "start": 2186,
+    "end": 2418,
     "lines": 233
   },
   {
     "file": "09_actions.js",
-    "start": 2405,
-    "end": 3695,
-    "lines": 1291
+    "start": 2419,
+    "end": 3720,
+    "lines": 1302
   },
   {
     "file": "10_sse_boot.js",
-    "start": 3696,
-    "end": 4332,
-    "lines": 637
+    "start": 3721,
+    "end": 4364,
+    "lines": 644
   }
 ]

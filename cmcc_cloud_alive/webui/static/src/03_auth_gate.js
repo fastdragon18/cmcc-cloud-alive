@@ -160,8 +160,7 @@
       toast("访问密钥已设置");
       pushGlobal("访问密钥首次设置完成");
       try {
-        await loadSys();
-        await loadProfiles(true);
+        await enterConsoleAfterAuth();
       } catch (e2) {
         toast(humanError(e2, "进入控制台失败"), true);
       }
@@ -193,9 +192,10 @@
       hideAccessGate();
       toast("已进入控制台");
       pushGlobal("访问密钥验证通过");
+      // Must also connectSSE()+startPolling(); a bare loadProfiles left the
+      // console static (no live logs/status) until a manual F5.
       try {
-        await loadSys();
-        await loadProfiles(true);
+        await enterConsoleAfterAuth();
       } catch (e2) {
         toast(humanError(e2, "加载账号失败"), true);
       }
@@ -319,6 +319,9 @@
       state.setupRequired = false;
       updateTokenBtn();
       hideTokenModal();
+      // The live SSE URL embeds the old token; reconnect so it doesn't 401 at
+      // the next retry and silently stop streaming keepalive logs.
+      reconnectSSE();
       toast(mode === "enable" ? "服务器访问鉴权已启用" : "服务器访问密钥已修改");
       pushGlobal(mode === "enable" ? "访问鉴权已启用" : "访问密钥已修改");
       await refreshAuthStatus();
@@ -428,28 +431,22 @@
     // Leave auth disabled: no token file, enter console without forcing setup.
     setGateErr("", "setup");
     try {
-      // Prefer explicit disable if API exists; otherwise just enter with empty token.
+      // Leave auth disabled server-side (no token file). /api/auth/disable is
+      // the real route; already-no-token just returns a benign 400/200.
       try {
         await api("/api/auth/disable", { method: "POST", body: "{}" });
       } catch (e1) {
-        try {
-          await api("/api/auth/clear", { method: "POST", body: "{}" });
-        } catch (e2) {
-          /* ok: already no token on server */
-        }
+        /* ok: already no token on server */
       }
       setToken("");
       state.setupRequired = false;
       state.tokenRequired = false;
       state.authEnabled = false;
-      hideAccessGate();
       updateTokenBtn && updateTokenBtn();
-      if (typeof toast === "function") toast("已跳过访问密钥，控制台可直接使用", "ok");
-      if (typeof bootstrapAfterAuth === "function") {
-        try { await bootstrapAfterAuth(); } catch (e) { logCatch("catch", e); }
-      } else if (typeof refreshAll === "function") {
-        try { await refreshAll(); } catch (e) { logCatch("catch", e); }
-      }
+      // toast(msg, isError): second arg is a boolean; "ok" is truthy and would
+      // paint this success message red. Enter the console for real (SSE+poll).
+      if (typeof toast === "function") toast("已跳过访问密钥，控制台可直接使用");
+      try { await enterConsoleAfterAuth(); } catch (e) { logCatch("catch", e); }
     } catch (err) {
       setGateErr((err && err.message) || String(err), "setup");
     }

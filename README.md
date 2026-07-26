@@ -67,13 +67,13 @@
 
 按你选的路径准备：
 
-| | 方式 A：Python 交互版（CLI） | 方式 B：Docker 网页版（WebUI） |
-|---|---|---|
-| 适合谁 | 习惯终端、单机逐台操作 | 想用浏览器管理、多账户并行 |
-| 本机需要 | Git + Python 3.10+ + pip/venv | Docker 与 Compose 插件（**无需**本机 Python） |
-| 怎么用 | 激活 `.venv` 后 `python3 -m cmcc_cloud_alive` | 一键 `docker compose` 后打开网页 |
-| 协议 | 你自己点选 ZTE / SCG | 每张卡片你自己点选 |
-| 默认模式 | 交互确认后真实保活 | **默认即为真实 live 保活**，无需额外开关 |
+| | 方式 A：Python 交互版（CLI） | 方式 B：本机网页版（免 Docker） | 方式 C：Docker 网页版 |
+|---|---|---|---|
+| 适合谁 | 习惯终端、单机逐台操作 | 想用浏览器、又不想装 Docker（**Mac/Win 推荐**） | Linux 服务器、想要容器隔离 |
+| 本机需要 | Git + Python 3.10+ + pip/venv | Git + Python 3.10+ | Docker 与 Compose（**无需**本机 Python） |
+| 怎么用 | 激活 `.venv` 后 `python3 -m cmcc_cloud_alive` | 一键 `bash scripts/run-webui.sh` 后开网页 | 一键 `docker compose` 后开网页 |
+| 协议 | 你自己点选 ZTE / SCG | 每张卡片你自己点选 | 每张卡片你自己点选 |
+| 默认模式 | 交互确认后真实保活 | **默认即为真实 live 保活** | **默认即为真实 live 保活** |
 
 > **无需代理配置**：本程序直接连接移动云电脑服务，不需要配置 `http_proxy` / `https_proxy`。  
 > Docker 容器内也**禁止走代理**，与交互版同一套源码链路。
@@ -151,7 +151,38 @@ python -m cmcc_cloud_alive
 python3 -m cmcc_cloud_alive --help
 ```
 
-### 方式 B：Docker 网页版 WebUI（小白一键）
+### 方式 B：本机网页版 WebUI（免 Docker，一键脚本）
+
+想用**网页界面**管理多个账号，又**不想装 Docker**？装好 Python（3.10+）后，**复制整段**到终端回车即可（脚本会自动建环境、装依赖、启动）：
+
+**Linux / macOS：**
+
+```bash
+git clone https://github.com/1936-zero/cmcc-cloud-alive.git \
+&& cd cmcc-cloud-alive \
+&& bash scripts/run-webui.sh
+```
+
+**Windows：** 先装 [Python 3.10+](https://www.python.org/downloads/)（安装时务必勾选 “Add Python to PATH”），然后：
+
+```bat
+git clone https://github.com/1936-zero/cmcc-cloud-alive.git
+cd cmcc-cloud-alive
+scripts\run-webui.bat
+```
+
+启动后，浏览器打开脚本提示的地址：
+
+```text
+http://127.0.0.1:8080
+```
+
+- 换端口：`CMCC_WEBUI_PORT=9000 bash scripts/run-webui.sh`（Windows 先 `set CMCC_WEBUI_PORT=9000` 再运行 .bat）。
+- 停止：在窗口按 **Ctrl+C**。以后再次启动，重复上面「进入目录 + 运行脚本」即可（环境已建好，秒开）。
+
+> Mac / Windows 用户推荐用这个方式 B —— 因为下面的 Docker 方式默认走 host 网络，Docker Desktop（Mac/Win）不支持。
+
+### 方式 C：Docker 网页版 WebUI（Linux 服务器推荐）
 
 需要本机已装 **Docker** 与 **Docker Compose 插件**（`docker compose version` 能跑通即可）。**不需要**本机装 Python。
 
@@ -169,7 +200,7 @@ docker compose -f docker/docker-compose.yml up -d --build
 http://127.0.0.1:28080
 ```
 
-（默认只绑本机 `127.0.0.1:28080`。要改端口可先 `export CMCC_HOST_PORT=端口号` 再启动。）
+（默认走 **host 网络**、只绑本机 `127.0.0.1:28080`。要改端口先 `export CMCC_WEBUI_PORT=端口号` 再启动。**macOS / Windows 的 Docker Desktop 不支持 host 网络**，请改用上面的方式 B，或按 `docker/docker-compose.yml` 顶部注释切换为端口映射。）
 
 界面预览：
 
@@ -228,7 +259,7 @@ WebUI 是壳：卡片 / 表单 / 日志；真正保活走与交互版同一套 `
 
 ## 用 Docker 启动网页版 WebUI
 
-> 上一节「方式 B」已覆盖小白一键。本节补充数据卷、多账户与排障细节。
+> 上一节「方式 C」已覆盖 Docker 一键启动。本节补充数据卷、多账户与排障细节。不想用 Docker 的话，用「方式 B：本机网页版（免 Docker）」更简单。
 
 ### 前置条件
 
@@ -402,6 +433,15 @@ python -m cmcc_cloud_alive
 ```
 
 进入程序后输入 `login`，选择之前保存的保活档案即可。
+
+### 本机网页版（免 Docker）
+
+```bash
+cd cmcc-cloud-alive
+bash scripts/run-webui.sh
+```
+
+浏览器打开 `http://127.0.0.1:8080`（Windows 用 `scripts\run-webui.bat`）。环境已建好，秒开。
 
 ### Docker WebUI
 

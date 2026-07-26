@@ -5,8 +5,9 @@ on the ASGI event-loop thread. Handlers live in split modules (D1 R4).
 """
 from __future__ import annotations
 
+import asyncio
+import contextlib
 import os
-from pathlib import Path
 
 from starlette.applications import Starlette
 from starlette.routing import Mount, Route
@@ -108,7 +109,21 @@ routes = [
 if _STATIC_DIR.is_dir():
     routes.append(Mount("/static", app=StaticFiles(directory=str(_STATIC_DIR)), name="static"))
 
-app = Starlette(debug=os.environ.get("CMCC_WEBUI_DEBUG") == "1", routes=routes)
+
+@contextlib.asynccontextmanager
+async def _lifespan(_app):
+    """Bind the running ASGI loop so ORCH._emit can wake SSE consumers from
+    worker threads via call_soon_threadsafe (otherwise events lag ~15s)."""
+    if hasattr(ORCH, "bind_loop"):
+        ORCH.bind_loop(asyncio.get_running_loop())
+    yield
+
+
+app = Starlette(
+    debug=os.environ.get("CMCC_WEBUI_DEBUG") == "1",
+    routes=routes,
+    lifespan=_lifespan,
+)
 app.add_middleware(OptionalTokenMiddleware)
 
 

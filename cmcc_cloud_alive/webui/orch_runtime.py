@@ -3,8 +3,8 @@ from __future__ import annotations
 
 import asyncio
 import threading
-import time
 import uuid
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from cmcc_cloud_alive.webui.common import _now_iso
@@ -38,13 +38,32 @@ class FakeOrchestrator:
         except ValueError:
             pass
 
-    def _emit(self, event: str, data: Dict[str, Any]) -> None:
-        payload = {"event": event, "data": data}
-        for q in list(self._subscribers):
+    @staticmethod
+    def _deliver(subs: List[asyncio.Queue], payload: Dict[str, Any]) -> None:
+        for q in subs:
             try:
                 q.put_nowait(payload)
             except asyncio.QueueFull:
                 pass
+
+    def _emit(self, event: str, data: Dict[str, Any]) -> None:
+        payload = {"event": event, "data": data}
+        subs = list(self._subscribers)
+        if not subs:
+            return
+        loop = self._loop
+        try:
+            running = asyncio.get_running_loop()
+        except RuntimeError:
+            running = None
+        # See Orchestrator._emit: cross-thread put_nowait won't wake the loop.
+        if loop is not None and running is not loop:
+            try:
+                loop.call_soon_threadsafe(self._deliver, subs, payload)
+                return
+            except RuntimeError:
+                pass
+        self._deliver(subs, payload)
 
     def list_jobs(self) -> List[Dict[str, Any]]:
         with self._lock:
@@ -80,6 +99,7 @@ class FakeOrchestrator:
         interval_sec: Optional[int] = None,
         traffic_sec: Optional[int] = None,
         duration_sec: Optional[int] = None,
+        user_service_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         protocol = (protocol or "ZTE").upper()
         if protocol not in ("ZTE", "SCG"):
@@ -105,6 +125,8 @@ class FakeOrchestrator:
                 "intervalSec": interval_sec,
                 "trafficSec": traffic_sec,
                 "durationSec": duration_sec,
+                "backend": "fake",
+                "userServiceId": (user_service_id or "").strip() or None,
             }
             self._jobs[job_id] = job
             self._by_profile[profile_id] = job_id
@@ -172,6 +194,17 @@ class FakeOrchestrator:
                 continue
             out[pid] = self.recent_logs(profile_id=pid, limit=limit)
         return out
+
+    def clear_logs(self, job_id: Optional[str] = None, profile_id: Optional[str] = None) -> Dict[str, Any]:
+        """Clear a card/job log buffer (parity with real Orchestrator.clear_logs)."""
+        with self._lock:
+            if not job_id and profile_id:
+                job_id = self._by_profile.get(profile_id)
+            cleared = 0
+            if job_id and job_id in self._log_buffers:
+                cleared = len(self._log_buffers[job_id])
+                self._log_buffers[job_id] = []
+        return {"ok": True, "cleared": cleared, "jobId": job_id}
 
     def append_global_log(
         self, line: str, level: str = "info", emit: bool = True

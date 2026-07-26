@@ -5,8 +5,8 @@ import asyncio
 import json
 import os
 import re
-import time
 import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, AsyncIterator, Dict, List, Optional
 
@@ -15,14 +15,10 @@ from starlette.responses import FileResponse, JSONResponse, Response, StreamingR
 
 from cmcc_cloud_alive.webui.common import (
     _STATIC_DIR,
-    _DEFAULT_DURATION_SEC,
-    _DEFAULT_INTERVAL_SEC,
-    _DEFAULT_TRAFFIC_SEC,
     _access_token_path,
     _data_dir,
     _mask_username,
     _now_iso,
-    _parse_positive_int,
     _read_access_token,
     api_error,
     parse_job_timing_fields,
@@ -83,13 +79,14 @@ def _is_shared_account_file(path: Path) -> bool:
     return path.name.startswith("acct_") and path.suffix == ".json"
 
 
-def _sync_shared_account(state: Dict[str, Any]) -> Optional[Path]:
+def _sync_shared_account(state: Dict[str, Any], *, allow_token_overwrite: bool = False) -> Optional[Path]:
     """Merge session fields into acct_<user>.json; return shared path or None.
 
     HARD_GATE#868: same account shares one token. Stale per-card tokens must
     NOT clobber a good shared token on start/hydrate. Token overwrite is only
-    allowed when the card just established a session (login path), or shared
-    has no token yet.
+    allowed when the caller just established a session — the login handlers pass
+    ``allow_token_overwrite=True``; every other caller (start/patch/logout)
+    leaves it False so a sibling card's fresh token is preserved.
     """
     username = str(state.get("username") or state.get("phone") or "").strip()
     if not username:
@@ -116,19 +113,17 @@ def _sync_shared_account(state: Dict[str, Any]) -> Optional[Path]:
             merged[dk] = card_dev
         # else keep shared / existing
 
-    # Token policy: protect shared sohoToken from stale card overwrite.
-    status = str(state.get("lastLoginStatus") or "")
-    fresh_login = status in (
-        "session-established",
-        "session-present",
-        "live-ok-no-token",
-    )
+    # Token policy: a non-empty shared sohoToken is only overwritten by a card
+    # that just established a session (allow_token_overwrite), or when shared has
+    # no token yet / the tokens already match. Relying on the *persisted*
+    # lastLoginStatus was the bug: it stays "session-*" forever, so any later
+    # start/patch/logout would clobber a sibling card's fresh token → 4015 mid-run.
     for tk in token_keys:
         card_tok = state.get(tk)
         if card_tok in (None, ""):
             continue
         shared_tok = merged.get(tk)
-        if shared_tok in (None, "") or card_tok == shared_tok or fresh_login:
+        if shared_tok in (None, "") or card_tok == shared_tok or allow_token_overwrite:
             merged[tk] = card_tok
         # else keep shared_tok (card is stale / partial)
 
@@ -255,6 +250,9 @@ def _public_profile(profile_id: str, state: Dict[str, Any], path: Path) -> Dict[
         "spuCode": spu,
         "protocolHint": official,
         "lastOfficialProtocol": official,
+        # user-chosen keepalive protocol (协议权归用户), surfaced so the FE
+        # segment/state round-trips across reloads; empty = not yet chosen.
+        "protocol": (str(state.get("protocol")).upper() if state.get("protocol") else ""),
         "hasPassword": bool(state.get("password")),
         "tokenPresent": bool(state.get("sohoToken") or state.get("token")),
         "isSubAccount": bool(state.get("isSubAccount")),
@@ -425,7 +423,7 @@ async def profiles_delete(request: Request) -> JSONResponse:
         status = (st or {}).get("status") or "idle"
         if status == "running":
             try:
-                job = ORCH.stop_job(pid)
+                job = await asyncio.to_thread(ORCH.stop_job, pid)
                 stopped = True
                 stop_detail = (job or {}).get("status") or "stopped"
             except KeyError:
@@ -636,7 +634,7 @@ async def profiles_login(request: Request) -> JSONResponse:
         )
         _write_state(path, state)
         try:
-            _sync_shared_account(state)
+            _sync_shared_account(state, allow_token_overwrite=True)
         except Exception:
             pass
         pub = _public_profile(pid, state, path)
@@ -665,7 +663,7 @@ async def profiles_login(request: Request) -> JSONResponse:
             state["lastLoginStatus"] = "session-present"
             _write_state(path, state)
             try:
-                _sync_shared_account(state)
+                _sync_shared_account(state, allow_token_overwrite=True)
             except Exception:
                 pass
             pub = _public_profile(pid, state, path)
@@ -769,7 +767,7 @@ async def profiles_login(request: Request) -> JSONResponse:
     _write_state(path, state)
     # HARD_GATE#868: same account shares one token store (acct_<user>.json)
     try:
-        _sync_shared_account(state)
+        _sync_shared_account(state, allow_token_overwrite=True)
     except Exception:
         pass
     pub = _public_profile(pid, state, path)
@@ -1002,27 +1000,41 @@ async def profiles_select_desktop(request: Request) -> JSONResponse:
     except Exception:
         return api_error("VALIDATION", "JSON body required")
     if not isinstance(body, dict):
-        body = {}
-    usid = body.get("userServiceId") or ""
+        return api_error("VALIDATION", "JSON object required")
+    usid = str(body.get("userServiceId") or "").strip()
+    if not usid:
+        # Previously an empty/garbage body returned 200 with nothing bound, and
+        # the FE then started keepalive against the *previous* desktop.
+        return api_error("VALIDATION", "userServiceId required", 400)
     label = body.get("desktopLabel") or body.get("desktopName") or body.get("vmName") or ""
     spu = body.get("spuCode") or body.get("spu") or ""
-    # Allow explicit official protocol, else derive from spu / protocolHint body.
-    official_in = body.get("lastOfficialProtocol") or body.get("protocolHint") or ""
     state = _read_state(path)
-    if usid:
-        state["userServiceId"] = str(usid)
+    state["userServiceId"] = usid
     if label:
         state["desktopLabel"] = str(label)
     if spu:
         spu_s = str(spu).strip()
         state["spuCode"] = spu_s
         state["lastSpuCode"] = spu_s
-    official = str(official_in).strip().upper() if official_in else ""
+    # Official protocol slot = spuCode-derived (or an explicit lastOfficialProtocol).
+    # It must NOT be clobbered by the user's UI choice: the FE sends the user's
+    # pick as protocolHint, which is a *separate* concern (协议权归用户).
+    official_in = str(body.get("lastOfficialProtocol") or "").strip()
+    official = official_in.upper() if official_in else ""
     if not official and state.get("spuCode"):
         official = _spu_protocol_hint(str(state.get("spuCode") or ""))
     if official:
         state["lastOfficialProtocol"] = official
         state["protocolHint"] = official
+    # Persist the user's own keepalive protocol choice separately so it survives
+    # reload and feeds resolve_user_protocol at start (source of truth stays user).
+    user_proto = str(body.get("protocol") or body.get("protocolHint") or "").strip().upper()
+    if user_proto in ("ZX", "ZHONGXING"):
+        user_proto = "ZTE"
+    elif user_proto == "SANGFOR":
+        user_proto = "SCG"
+    if user_proto in ("ZTE", "SCG"):
+        state["protocol"] = user_proto
     # HARD_GATE#851: keep draft; only save-and-start commits to timeline
     state["updatedAt"] = _now_iso()
     _write_state(path, state)
@@ -1163,7 +1175,9 @@ async def profiles_stop_job(request: Request) -> JSONResponse:
     if not path.is_file():
         return api_error("NOT_FOUND", f"profile {pid} not found", 404)
     try:
-        job = ORCH.stop_job(pid)
+        # stop_job does a blocking remote logout + SIGTERM/join; keep it off the
+        # ASGI loop so other cards' SSE/polling don't freeze during a slow stop.
+        job = await asyncio.to_thread(ORCH.stop_job, pid)
     except KeyError:
         return api_error("NOT_FOUND", "no job for profile", 404)
     return JSONResponse({"ok": True, "job": job})
@@ -1477,22 +1491,29 @@ async def jobs_create(request: Request) -> JSONResponse:
     if not path.is_file():
         return api_error("NOT_FOUND", f"profile {pid} not found", 404)
     state = _read_state(path)
+    state = _hydrate_profile_from_shared(state)
     protocol = resolve_user_protocol((body or {}).get("protocol"), state)
     mode = body.get("mode") or "live"
     try:
         timing = parse_job_timing_fields(body if isinstance(body, dict) else {})
     except ValueError as e:
         return api_error("VALIDATION", str(e))
+    # Same shared-state resolution + desktop-collision guard as
+    # profiles_start_job — otherwise this route bypasses acct_<user>.json token
+    # sharing and USID_IN_USE, letting two cards fight over one SOHO session.
+    usid = _card_user_service_id(state)
+    live_path = _resolve_live_state_path(path, state)
     try:
         job = await asyncio.to_thread(ORCH.start_job,
             str(pid),
-            path,
+            live_path,
             protocol=protocol,
             mode=mode,
             extra_args=timing["extraArgs"],
             interval_sec=timing["intervalSec"],
             traffic_sec=timing["trafficSec"],
             duration_sec=timing["durationSec"],
+            user_service_id=str(usid) if usid else None,
         )
     except TypeError:
         try:
@@ -1549,8 +1570,18 @@ async def jobs_stop(request: Request) -> JSONResponse:
     job = ORCH.get_job(jid)
     if not job:
         return api_error("NOT_FOUND", f"job {jid} not found", 404)
+    # stop_job is keyed by profile, so a stale/superseded job_id must not kill
+    # whatever job is currently running for that profile. Only stop when this
+    # job_id is still the profile's active running job; otherwise treat the call
+    # as idempotent and return the (already finished / superseded) job.
+    if job.get("status") != "running":
+        return JSONResponse({"ok": True, "job": job})
+    pid = job["profileId"]
+    cur = (ORCH.get_status(pid) or {}).get("jobId") if hasattr(ORCH, "get_status") else jid
+    if cur != jid:
+        return JSONResponse({"ok": True, "job": job})
     try:
-        stopped = ORCH.stop_job(job["profileId"])
+        stopped = await asyncio.to_thread(ORCH.stop_job, pid)
     except KeyError:
         return api_error("NOT_FOUND", "job already gone", 404)
     return JSONResponse({"ok": True, "job": stopped})

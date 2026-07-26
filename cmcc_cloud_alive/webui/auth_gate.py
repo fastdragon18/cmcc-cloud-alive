@@ -3,13 +3,13 @@ from __future__ import annotations
 
 import os
 import secrets
-from typing import Any, Optional
 
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import JSONResponse
 
 from cmcc_cloud_alive.webui.common import (
+    _access_token_path,
     _clear_access_token,
     _extract_request_token,
     _read_access_token,

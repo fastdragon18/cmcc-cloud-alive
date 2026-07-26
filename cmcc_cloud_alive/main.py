@@ -346,12 +346,15 @@ def _password_login_with_retry(username, password, state_path, save_password=Fal
     current = password
     for attempt in range(1, max_attempts + 1):
         try:
+            # Persist on the *successful* attempt (password_login only writes on
+            # success), so a password corrected on retry is still saved for
+            # token-expiry auto-relogin. Re-prompt on a wrong password instead of
+            # aborting — this tool is used by non-technical users and a typo must
+            # not force restarting the whole interactive flow.
             auth.password_login(username, current, state_path,
-                                save_password=save_password if attempt == 1 else False)
+                                save_password=save_password)
             return current
         except core.CmccError as err:
-            if save_password:
-                raise
             if attempt >= max_attempts:
                 raise core.CmccError(
                     f"密码错误次数过多（已尝试 {max_attempts} 次），请确认账号密码后重试") from err

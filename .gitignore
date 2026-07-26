@@ -3,6 +3,7 @@ __pycache__/
 *.py[cod]
 *$py.class
 .venv/
+.venv-webui/
 venv/
 .env
 *.egg-info/
@@ -45,7 +46,6 @@ _backup_before_selfcontained_*/
 .agent/
 .agent_protocol_runner_checkpoint.txt
 docs/
-tests/
 scg_go/
 research/
 notes/

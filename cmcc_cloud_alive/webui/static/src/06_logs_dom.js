@@ -211,8 +211,13 @@
     if (!el) return;
     let v = extractDesktopStatusFromLogs(pid);
     if (!v) {
-      const st = (state.profiles && state.profiles[pid] && state.profiles[pid].status) || "";
-      const job = (state.jobs && state.jobs[pid]) || {};
+      // state.profiles is an Array (index-by-id yields undefined) and state.jobs
+      // does not exist — the correct shapes are .find(id) and jobsByProfile.
+      const prof = (state.profiles && state.profiles.find)
+        ? state.profiles.find(function (x) { return x && x.id === pid; })
+        : null;
+      const st = (prof && (prof.jobStatus || prof.status)) || "";
+      const job = (state.jobsByProfile && state.jobsByProfile[pid]) || {};
       const running = /run|alive|keep|active|ing/i.test(String(st)) ||
         /run|alive|active/i.test(String(job.status || job.state || ""));
       const cardRun = card.classList.contains("is-running") || card.getAttribute("data-running") === "1";

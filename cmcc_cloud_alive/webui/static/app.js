@@ -304,8 +304,7 @@
       toast("访问密钥已设置");
       pushGlobal("访问密钥首次设置完成");
       try {
-        await loadSys();
-        await loadProfiles(true);
+        await enterConsoleAfterAuth();
       } catch (e2) {
         toast(humanError(e2, "进入控制台失败"), true);
       }
@@ -337,9 +336,10 @@
       hideAccessGate();
       toast("已进入控制台");
       pushGlobal("访问密钥验证通过");
+      // Must also connectSSE()+startPolling(); a bare loadProfiles left the
+      // console static (no live logs/status) until a manual F5.
       try {
-        await loadSys();
-        await loadProfiles(true);
+        await enterConsoleAfterAuth();
       } catch (e2) {
         toast(humanError(e2, "加载账号失败"), true);
       }
@@ -463,6 +463,9 @@
       state.setupRequired = false;
       updateTokenBtn();
       hideTokenModal();
+      // The live SSE URL embeds the old token; reconnect so it doesn't 401 at
+      // the next retry and silently stop streaming keepalive logs.
+      reconnectSSE();
       toast(mode === "enable" ? "服务器访问鉴权已启用" : "服务器访问密钥已修改");
       pushGlobal(mode === "enable" ? "访问鉴权已启用" : "访问密钥已修改");
       await refreshAuthStatus();
@@ -572,28 +575,22 @@
     // Leave auth disabled: no token file, enter console without forcing setup.
     setGateErr("", "setup");
     try {
-      // Prefer explicit disable if API exists; otherwise just enter with empty token.
+      // Leave auth disabled server-side (no token file). /api/auth/disable is
+      // the real route; already-no-token just returns a benign 400/200.
       try {
         await api("/api/auth/disable", { method: "POST", body: "{}" });
       } catch (e1) {
-        try {
-          await api("/api/auth/clear", { method: "POST", body: "{}" });
-        } catch (e2) {
-          /* ok: already no token on server */
-        }
+        /* ok: already no token on server */
       }
       setToken("");
       state.setupRequired = false;
       state.tokenRequired = false;
       state.authEnabled = false;
-      hideAccessGate();
       updateTokenBtn && updateTokenBtn();
-      if (typeof toast === "function") toast("已跳过访问密钥，控制台可直接使用", "ok");
-      if (typeof bootstrapAfterAuth === "function") {
-        try { await bootstrapAfterAuth(); } catch (e) { logCatch("catch", e); }
-      } else if (typeof refreshAll === "function") {
-        try { await refreshAll(); } catch (e) { logCatch("catch", e); }
-      }
+      // toast(msg, isError): second arg is a boolean; "ok" is truthy and would
+      // paint this success message red. Enter the console for real (SSE+poll).
+      if (typeof toast === "function") toast("已跳过访问密钥，控制台可直接使用");
+      try { await enterConsoleAfterAuth(); } catch (e) { logCatch("catch", e); }
     } catch (err) {
       setGateErr((err && err.message) || String(err), "setup");
     }
@@ -1264,8 +1261,13 @@ function wireAccessGate() {
     if (!el) return;
     let v = extractDesktopStatusFromLogs(pid);
     if (!v) {
-      const st = (state.profiles && state.profiles[pid] && state.profiles[pid].status) || "";
-      const job = (state.jobs && state.jobs[pid]) || {};
+      // state.profiles is an Array (index-by-id yields undefined) and state.jobs
+      // does not exist — the correct shapes are .find(id) and jobsByProfile.
+      const prof = (state.profiles && state.profiles.find)
+        ? state.profiles.find(function (x) { return x && x.id === pid; })
+        : null;
+      const st = (prof && (prof.jobStatus || prof.status)) || "";
+      const job = (state.jobsByProfile && state.jobsByProfile[pid]) || {};
       const running = /run|alive|keep|active|ing/i.test(String(st)) ||
         /run|alive|active/i.test(String(job.status || job.state || ""));
       const cardRun = card.classList.contains("is-running") || card.getAttribute("data-running") === "1";
@@ -2024,9 +2026,21 @@ function wireAccessGate() {
     const keepVal = active && "value" in active ? active.value : null;
     body.innerHTML = configFormHtml(p);
     if (keepKey) {
-      const el = body.querySelector('[data-key="' + keepKey + '"]');
+      // Desktop radios all share data-key="desktop"; a bare querySelector would
+      // return the FIRST radio and (below) overwrite its fixed value with the
+      // focused radio's usid → the wrong desktop gets bound. Disambiguate by
+      // value in JS, and never rewrite a radio/checkbox value.
+      const cands = body.querySelectorAll('[data-key="' + keepKey + '"]');
+      let el = null;
+      if (keepVal != null) {
+        for (let i = 0; i < cands.length; i++) {
+          if (cands[i].value === keepVal) { el = cands[i]; break; }
+        }
+      }
+      if (!el) el = cands[0] || null;
       if (el) {
-        if (keepVal != null && el.type !== "password") {
+        const t = el.type;
+        if (keepVal != null && t !== "password" && t !== "radio" && t !== "checkbox") {
           try {
             el.value = keepVal;
           } catch (_) { logCatch("catch", _); }
@@ -2480,7 +2494,7 @@ function setComposerMsg(text, kind) {
           },
         });
       }
-      if (d.userServiceId || d.desktopLabel) {
+      if (d.userServiceId) {
         await api(
           "/api/profiles/" + encodeURIComponent(pid) + "/select-desktop",
           {
@@ -2543,10 +2557,10 @@ function setComposerMsg(text, kind) {
           },
         });
       }
-      // 登录后尽量刷新桌面列表 / 协议提示
+      // 登录后尽量刷新桌面列表 / 协议提示（refresh=1：绕过缓存重新拉取官方列表）
       try {
         const deskData = await api(
-          "/api/profiles/" + encodeURIComponent(pid) + "/desktops"
+          "/api/profiles/" + encodeURIComponent(pid) + "/desktops?refresh=1"
         );
         const list =
           (deskData && (deskData.desktops || deskData.items || deskData.list)) ||
@@ -2572,7 +2586,7 @@ function setComposerMsg(text, kind) {
       } catch (_) {
         /* 桌面刷新失败不阻断启动；AUTH 等由后续 select/jobs 暴露 */
       }
-      if (d.userServiceId || d.desktopLabel) {
+      if (d.userServiceId) {
         await api(
           "/api/profiles/" + encodeURIComponent(pid) + "/select-desktop",
           {
@@ -2777,8 +2791,10 @@ function setComposerMsg(text, kind) {
     state.busy[pid] = true;
     renderCards();
     try {
+      // Explicit user refresh must bypass the server-side cloudList cache,
+      // otherwise added/removed desktops and power state never update.
       const data = await api(
-        "/api/profiles/" + encodeURIComponent(pid) + "/desktops"
+        "/api/profiles/" + encodeURIComponent(pid) + "/desktops?refresh=1"
       );
       const list =
         (data && (data.desktops || data.items || data.list)) ||
@@ -3231,7 +3247,7 @@ function setComposerMsg(text, kind) {
       let list = [];
       try {
         const deskData = await api(
-          "/api/profiles/" + encodeURIComponent(pid) + "/desktops"
+          "/api/profiles/" + encodeURIComponent(pid) + "/desktops?refresh=1"
         );
         list =
           (deskData && (deskData.desktops || deskData.items || deskData.list)) ||
@@ -3393,7 +3409,7 @@ function setComposerMsg(text, kind) {
         }
       }
 
-      if (c.userServiceId || c.desktopLabel) {
+      if (c.userServiceId) {
         await api(
           "/api/profiles/" + encodeURIComponent(pid) + "/select-desktop",
           {
@@ -3655,10 +3671,19 @@ function setComposerMsg(text, kind) {
         const actEl = ev.target.closest("[data-act]");
         if (!actEl) return;
         const act = actEl.getAttribute("data-act");
-        const pid = actEl.getAttribute("data-pid") || state.configPid || "";
+        // login button inside the modal carries data-id (not data-pid); fall
+        // back to it and to the open modal's configPid.
+        const pid = actEl.getAttribute("data-pid") || actEl.getAttribute("data-id") || state.configPid || "";
         if (act === "config-close") {
           ev.preventDefault();
           closeConfigModal();
+          return;
+        }
+        // The inline 登录 button (config-modal is outside #timeline, so the
+        // timeline delegate never saw it) — wire it here.
+        if (act === "login" && pid) {
+          ev.preventDefault();
+          onConfigLogin(pid);
           return;
         }
         if (act === "save" && pid) {
@@ -3746,6 +3771,13 @@ function setComposerMsg(text, kind) {
     const pid = data.profileId || data.profile_id || "";
     // HARD_GATE#854: SSE buffers + paints via pushCard→applyLogsToDom (clear后新日志立即可见)
     if (pid) pushCard(pid, line, data.at || new Date().toISOString());
+  }
+
+  // Reopen the SSE stream with the current token (connectSSE already closes the
+  // old EventSource first). Used after an access-key change so the embedded
+  // ?token= is refreshed instead of 401-ing on the next retry.
+  function reconnectSSE() {
+    try { connectSSE(); } catch (_) { logCatch("catch", _); }
   }
 
   function connectSSE() {

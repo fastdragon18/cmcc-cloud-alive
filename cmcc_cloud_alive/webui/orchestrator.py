@@ -341,9 +341,17 @@ class SubprocessBackend:
 
     def start(self) -> None:
         self._acquire_lock()
-        cmd = self._build_cmd()
-        self.log_path.parent.mkdir(parents=True, exist_ok=True)
-        log_f = open(self.log_path, "a", encoding="utf-8")  # noqa: SIM115 — kept open for child lifetime
+        # Everything between acquiring the lock and a successful spawn must
+        # release the lock on failure — otherwise _build_cmd() raising (e.g.
+        # "state missing userServiceId") leaks the flock and the profile is
+        # permanently unstartable until the WebUI restarts.
+        try:
+            cmd = self._build_cmd()
+            self.log_path.parent.mkdir(parents=True, exist_ok=True)
+            log_f = open(self.log_path, "a", encoding="utf-8")  # noqa: SIM115 — kept open for child lifetime
+        except Exception:
+            self._release_lock()
+            raise
         try:
             # HARD_GATE#870: never inherit a cwd that shadows site-packages with
             # stale /app/cmcc_cloud_alive (python -m prefers cwd first).
@@ -373,27 +381,34 @@ class SubprocessBackend:
         )
         self._thread.start()
 
+    @staticmethod
+    def _signal_proc(proc: "subprocess.Popen", hard: bool) -> None:
+        """Signal the child. POSIX: whole session group (start_new_session=True).
+        Windows has no killpg/SIGKILL/process-group, so fall back to
+        terminate()/kill() — os.killpg would raise AttributeError there and
+        (uncaught) leave the child alive while the job is marked stopped."""
+        killpg = getattr(os, "killpg", None)
+        if killpg is not None:
+            sig = getattr(signal, "SIGKILL", signal.SIGTERM) if hard else signal.SIGTERM
+            try:
+                killpg(proc.pid, sig)
+                return
+            except (ProcessLookupError, PermissionError, OSError):
+                pass  # fall through to per-process terminate/kill
+        try:
+            proc.kill() if hard else proc.terminate()
+        except Exception:
+            pass
+
     def stop(self, timeout: float = 5.0) -> None:
         self.stop_evt.set()
         proc = self._proc
         if proc and proc.poll() is None:
-            try:
-                os.killpg(proc.pid, signal.SIGTERM)
-            except (ProcessLookupError, PermissionError, OSError):
-                try:
-                    proc.terminate()
-                except Exception:
-                    pass
+            self._signal_proc(proc, hard=False)
             try:
                 proc.wait(timeout=timeout)
             except subprocess.TimeoutExpired:
-                try:
-                    os.killpg(proc.pid, signal.SIGKILL)
-                except (ProcessLookupError, PermissionError, OSError):
-                    try:
-                        proc.kill()
-                    except Exception:
-                        pass
+                self._signal_proc(proc, hard=True)
         t = self._thread
         if t and t.is_alive():
             t.join(timeout=timeout)
@@ -402,7 +417,9 @@ class SubprocessBackend:
     def pid(self) -> Optional[int]:
         if self._proc is None:
             return None
-        return self._proc.pid if self._proc.poll() is None else self._proc.pid
+        # None once the child has exited so the UI never shows a stale PID that
+        # the OS may have since reused for an unrelated process.
+        return self._proc.pid if self._proc.poll() is None else None
 
     def _build_cmd(self) -> List[str]:
         # LIVE child matches Python simple interactive path:
@@ -640,15 +657,36 @@ class Orchestrator:
             except ValueError:
                 pass
 
-    def _emit(self, event: str, data: Dict[str, Any]) -> None:
-        payload = {"event": event, "data": data}
-        with self._lock:
-            subs = list(self._subscribers)
+    @staticmethod
+    def _deliver(subs: List[asyncio.Queue], payload: Dict[str, Any]) -> None:
         for q in subs:
             try:
                 q.put_nowait(payload)
             except asyncio.QueueFull:
                 pass
+
+    def _emit(self, event: str, data: Dict[str, Any]) -> None:
+        payload = {"event": event, "data": data}
+        with self._lock:
+            subs = list(self._subscribers)
+        if not subs:
+            return
+        loop = self._loop
+        try:
+            running = asyncio.get_running_loop()
+        except RuntimeError:
+            running = None
+        # asyncio.Queue is not thread-safe: a bare put_nowait from a worker
+        # thread appends to the queue but never wakes the loop selector, so the
+        # SSE consumer only sees the event on its next timeout. Hop onto the
+        # loop thread via call_soon_threadsafe so waiting get()s wake at once.
+        if loop is not None and running is not loop:
+            try:
+                loop.call_soon_threadsafe(self._deliver, subs, payload)
+                return
+            except RuntimeError:
+                pass  # loop closed/not running — best-effort direct put below
+        self._deliver(subs, payload)
 
     # ------------------------------------------------------------------
     # Query
@@ -1188,10 +1226,13 @@ class Orchestrator:
             stop_evt = self._stop_events.get(jid)
             usid = (job.get("userServiceId") or "").strip()
             state_path = job.get("statePath")
+            is_live = job.get("backend") != "fake" and job.get("mode") != "dry-run"
 
         # Graceful remote release BEFORE local SIGTERM (stop/clear buttons).
         # Local kill alone can leave SOHO/SCG ghost sessions → MAIN_INIT missing.
-        if usid and state_path:
+        # dry-run never established a real session, so skip the network logout
+        # (it would otherwise block on the SOHO endpoint for no reason).
+        if usid and state_path and is_live:
             try:
                 from cmcc_cloud_alive import logout as logout_mod
 

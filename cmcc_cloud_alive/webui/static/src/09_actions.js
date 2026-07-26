@@ -76,7 +76,7 @@
           },
         });
       }
-      if (d.userServiceId || d.desktopLabel) {
+      if (d.userServiceId) {
         await api(
           "/api/profiles/" + encodeURIComponent(pid) + "/select-desktop",
           {
@@ -139,10 +139,10 @@
           },
         });
       }
-      // 登录后尽量刷新桌面列表 / 协议提示
+      // 登录后尽量刷新桌面列表 / 协议提示（refresh=1：绕过缓存重新拉取官方列表）
       try {
         const deskData = await api(
-          "/api/profiles/" + encodeURIComponent(pid) + "/desktops"
+          "/api/profiles/" + encodeURIComponent(pid) + "/desktops?refresh=1"
         );
         const list =
           (deskData && (deskData.desktops || deskData.items || deskData.list)) ||
@@ -168,7 +168,7 @@
       } catch (_) {
         /* 桌面刷新失败不阻断启动；AUTH 等由后续 select/jobs 暴露 */
       }
-      if (d.userServiceId || d.desktopLabel) {
+      if (d.userServiceId) {
         await api(
           "/api/profiles/" + encodeURIComponent(pid) + "/select-desktop",
           {
@@ -373,8 +373,10 @@
     state.busy[pid] = true;
     renderCards();
     try {
+      // Explicit user refresh must bypass the server-side cloudList cache,
+      // otherwise added/removed desktops and power state never update.
       const data = await api(
-        "/api/profiles/" + encodeURIComponent(pid) + "/desktops"
+        "/api/profiles/" + encodeURIComponent(pid) + "/desktops?refresh=1"
       );
       const list =
         (data && (data.desktops || data.items || data.list)) ||
@@ -827,7 +829,7 @@
       let list = [];
       try {
         const deskData = await api(
-          "/api/profiles/" + encodeURIComponent(pid) + "/desktops"
+          "/api/profiles/" + encodeURIComponent(pid) + "/desktops?refresh=1"
         );
         list =
           (deskData && (deskData.desktops || deskData.items || deskData.list)) ||
@@ -989,7 +991,7 @@
         }
       }
 
-      if (c.userServiceId || c.desktopLabel) {
+      if (c.userServiceId) {
         await api(
           "/api/profiles/" + encodeURIComponent(pid) + "/select-desktop",
           {
@@ -1251,10 +1253,19 @@
         const actEl = ev.target.closest("[data-act]");
         if (!actEl) return;
         const act = actEl.getAttribute("data-act");
-        const pid = actEl.getAttribute("data-pid") || state.configPid || "";
+        // login button inside the modal carries data-id (not data-pid); fall
+        // back to it and to the open modal's configPid.
+        const pid = actEl.getAttribute("data-pid") || actEl.getAttribute("data-id") || state.configPid || "";
         if (act === "config-close") {
           ev.preventDefault();
           closeConfigModal();
+          return;
+        }
+        // The inline 登录 button (config-modal is outside #timeline, so the
+        // timeline delegate never saw it) — wire it here.
+        if (act === "login" && pid) {
+          ev.preventDefault();
+          onConfigLogin(pid);
           return;
         }
         if (act === "save" && pid) {

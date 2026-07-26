@@ -53,6 +53,13 @@
     if (pid) pushCard(pid, line, data.at || new Date().toISOString());
   }
 
+  // Reopen the SSE stream with the current token (connectSSE already closes the
+  // old EventSource first). Used after an access-key change so the embedded
+  // ?token= is refreshed instead of 401-ing on the next retry.
+  function reconnectSSE() {
+    try { connectSSE(); } catch (_) { logCatch("catch", _); }
+  }
+
   function connectSSE() {
     if (typeof EventSource === "undefined") return;
     try {

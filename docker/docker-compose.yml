@@ -18,6 +18,11 @@
 #                      $CMCC_ALIVE_HOME/.cmcc-cloud-alive
 #
 # Jobs default to live (real keepalive). No LIVE gate env is required.
+#
+# Fixed project name so the data volume is `cmcc-cloud-alive_cmcc_data`
+# (not `docker_cmcc_data` when using `-f docker/docker-compose.yml`).
+name: cmcc-cloud-alive
+
 services:
   cmcc-webui:
     build:

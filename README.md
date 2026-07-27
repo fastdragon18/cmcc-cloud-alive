@@ -186,21 +186,32 @@ http://127.0.0.1:8080
 
 需要本机已装 **Docker** 与 **Docker Compose 插件**（`docker compose version` 能跑通即可）。**不需要**本机装 Python。
 
-在仓库根目录复制执行：
+复制整段到终端执行（与方式 A 一样可一行粘贴）：
 
 ```bash
-git clone https://github.com/1936-zero/cmcc-cloud-alive.git
-cd cmcc-cloud-alive
-docker compose -f docker/docker-compose.yml up -d --build
+git clone https://github.com/1936-zero/cmcc-cloud-alive.git \
+&& cd cmcc-cloud-alive \
+&& docker compose -f docker/docker-compose.yml up -d --build
 ```
 
-浏览器打开：
+> **弱网 / 超时提示**：仓库含离线 `docker/wheels`，首次 `git clone` 可能较慢。若中途失败，删掉半成品目录后重试即可：  
+> `rm -rf cmcc-cloud-alive && git clone https://github.com/1936-zero/cmcc-cloud-alive.git`  
+> 也可先浅克隆再补全历史：`git clone --depth 1 https://github.com/1936-zero/cmcc-cloud-alive.git`。
+
+**本机浏览器**打开：
 
 ```text
 http://127.0.0.1:28080
 ```
 
-（默认走 **host 网络**、只绑本机 `127.0.0.1:28080`。要改端口先 `export CMCC_WEBUI_PORT=端口号` 再启动。**macOS / Windows 的 Docker Desktop 不支持 host 网络**，请改用上面的方式 B，或按 `docker/docker-compose.yml` 顶部注释切换为端口映射。）
+**远程 SSH 机器**上装好后，WebUI 默认只绑本机环回（安全默认），外网浏览器直接打不开。在你自己的电脑上开隧道再访问：
+
+```bash
+ssh -L 28080:127.0.0.1:28080 <user>@<服务器>
+# 然后本机浏览器打开 http://127.0.0.1:28080
+```
+
+（默认走 **host 网络**、只绑 `127.0.0.1:28080`。要改端口先 `export CMCC_WEBUI_PORT=端口号` 再启动。数据卷固定为 `cmcc-cloud-alive_cmcc_data`。**macOS / Windows 的 Docker Desktop 不支持 host 网络**，请改用上面的方式 B，或按 `docker/docker-compose.yml` 顶部注释切换为端口映射。）
 
 界面预览：
 
@@ -208,13 +219,13 @@ http://127.0.0.1:28080
 |---|---|---|
 | ![新建账号表单与多卡片](assets/webui/webui-form-and-cards.png) | ![双卡片保活中](assets/webui/webui-cards-running.png) | ![完整日志弹层](assets/webui/webui-full-log.png) |
 
-常用：
+常用（均在仓库根目录执行）：
 
 ```bash
 # 看日志
 docker compose -f docker/docker-compose.yml logs -f cmcc-webui
 
-# 停止（数据保留在 Docker volume）
+# 停止（数据保留在 Docker volume `cmcc-cloud-alive_cmcc_data`）
 docker compose -f docker/docker-compose.yml down
 
 # 更新代码后重建
